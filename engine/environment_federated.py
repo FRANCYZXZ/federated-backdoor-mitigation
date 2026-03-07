@@ -1,35 +1,48 @@
 from __future__ import print_function
-#from lib2to3.pgen2.tokenize import tokenize
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from sklearn.metrics import *
-from matplotlib import pyplot as plt
 from torch.utils.data import DataLoader
-from models import *
-from utils import *
-from sampling import *
-from datasets import *
+from models.models import *
+from utils.utils import *
+from src.sampling import *
+from src.datasets import *
 import os
 import sys
 import random
 from tqdm.std import tqdm
 import copy
-from operator import itemgetter
 import time
-from random import shuffle
-from aggregation import *
-from IPython.display import clear_output
+from models.aggregation import *
 import gc
 import torchvision
+import yaml
 
-checkpoint_name = "checkpoints/backdoor_CIFAR10_ResNet18_IID_fl_defender_epoch_20_prova.t7"
+try:
+    with open("config.yaml", "r") as file:
+        GLOBAL_CONFIG = yaml.safe_load(file)
+except FileNotFoundError:
+    print("Warning: 'config.yaml' not found. Using default paths.")
+    GLOBAL_CONFIG = {}
+
+INVERSION_CONFIG = GLOBAL_CONFIG.get("inversion", {})
+
+
+BASE_DIR = "./model_checkpoints"
+CHECKPOINT_DIR = f"{BASE_DIR}/checkpoints"
+RESULTS_DIR = f"{BASE_DIR}/results"
+SANITIZED_DIR = f"{BASE_DIR}/sanitized_model"
+RECON_DIR = "./reconstructed_images"
+
+os.makedirs(BASE_DIR, exist_ok=True)
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+os.makedirs(RESULTS_DIR, exist_ok=True)
+os.makedirs(SANITIZED_DIR, exist_ok=True)
+os.makedirs(RECON_DIR, exist_ok=True)
 
 
 class Peer():
-    # Class variable shared among all the instances
     _performed_attacks = 0
     @property
     def performed_attacks(self):
@@ -54,6 +67,7 @@ class Peer():
         self.local_lr = local_lr
         self.local_momentum = local_momentum
         self.peer_type = peer_type
+
 #======================================= Start of training function ===========================================================#
     def participant_update(self, global_epoch, model, attack_type = 'no_attack', malicious_behavior_rate = 0, 
                             source_class = None, target_class = None, dataset_name = None, global_rounds = None,
@@ -71,8 +85,7 @@ class Peer():
         train_loader = DataLoader(copy.deepcopy(self.local_data), self.local_bs, shuffle = True, drop_last=True)
         
         if not reconstruction_mode:
-            if dataset_name == 'IMDB': optimizer = optim.Adam(model.parameters(), lr=self.local_lr)
-            else: optimizer = optim.SGD(model.parameters(), lr=self.local_lr, momentum=self.local_momentum, weight_decay=5e-4)
+            optimizer = optim.SGD(model.parameters(), lr=self.local_lr, momentum=self.local_momentum, weight_decay=5e-4)
             model.train()
         else:
             model.eval() 
@@ -83,8 +96,8 @@ class Peer():
             epoch_loss = []
             for batch_idx, (data, target) in enumerate(train_loader):
                 data, target = data.to(self.device), target.to(self.device)
-                if dataset_name == 'IMDB': target = target.view(-1,1)
                 is_attacking_now = False
+                
                 if (attack_type == 'backdoor') and (self.peer_type == 'attacker'):
                     if np.random.random() <= malicious_behavior_rate:
                         is_attacking_now = True
@@ -109,7 +122,6 @@ class Peer():
                     if is_attacking_now:
                         print(f"\n[RECON] Peer {self.peer_id} (Attacker) decided to attack in this round! Starting Gradient Inversion...")
                         try:
-                            
                             PROJECT_ROOT = os.getcwd()
                             INVGRAD_PATH = os.path.join(PROJECT_ROOT, "invertinggradients")
                             
@@ -124,8 +136,7 @@ class Peer():
                             
                             # Salva Originale
                             orig_show = torch.clamp(target_img[0] * ds + dm, 0, 1)
-                            os.makedirs("./reconstructed_images", exist_ok=True)
-                            torchvision.utils.save_image(orig_show, f"./reconstructed_images/ORIGINAL_peer{self.peer_id}.png")
+                            torchvision.utils.save_image(orig_show, f"{RECON_DIR}/ORIGINAL_peer{self.peer_id}.png")
 
                             # Calcola Gradiente
                             model.zero_grad()
@@ -133,16 +144,18 @@ class Peer():
                             input_gradient = torch.autograd.grad(loss, model.parameters())
                             input_gradient = [grad.detach().clone() for grad in input_gradient]
 
-                            # Configurazione
+                            # Configurazione Inversion
                             config = DEFAULT_CONFIG.copy()
-                            config['max_iterations'] = 8000
-                            config['cost_fn'] = 'sim'
-                            config['optim'] = 'adam'
-                            config['lr'] = 0.1        
-                            config['total_variation'] = 1e-2
-                            config['boxed'] = True
-                            config['restarts'] = 3
-                            config['lr_decay'] = True
+
+                            config['max_iterations'] = INVERSION_CONFIG.get('max_iterations', config['max_iterations'])
+                            config['cost_fn'] = INVERSION_CONFIG.get('cost_fn', config['cost_fn'])
+                            config['optim'] = INVERSION_CONFIG.get('optim', config['optim'])
+                            config['lr'] = INVERSION_CONFIG.get('lr', config['lr'])
+                            config['total_variation'] = INVERSION_CONFIG.get('total_variation', config['total_variation'])
+                            config['boxed'] = INVERSION_CONFIG.get('boxed', config['boxed'])
+                            config['restarts'] = INVERSION_CONFIG.get('restarts', config['restarts'])
+                            config['lr_decay'] = INVERSION_CONFIG.get('lr_decay', config['lr_decay'])
+
 
                             rec_machine = GradientReconstructor(model, mean_std=(dm, ds), config=config, num_images=1)
                             onehot = torch.zeros(1, 10, device=self.device); onehot[0, target_class] = 1
@@ -151,19 +164,15 @@ class Peer():
 
                             # Salva Risultato
                             rec_denorm = torch.clamp(reconstructed * ds + dm, 0, 1)
-                            save_path = f"./reconstructed_images/RECON_peer{self.peer_id}.png"
+                            save_path = f"{RECON_DIR}/RECON_peer{self.peer_id}.png"
                             torchvision.utils.save_image(rec_denorm, save_path)
                             print(f"[RECON] Saved to {save_path} | Loss: {stats['opt']}")
                             
                         except Exception as e:
                             print(f"[RECON ERROR] {e}")
                         
-                        # Dopo aver ricostruito, interrompiamo questo peer. 
-                        # Non serve processare altri batch per la ricostruzione.
                         return model, 0.0
                     else:
-                        # Se siamo in reconstruction_mode ma questo peer non ha attaccato (probabilità),
-                        # passiamo al prossimo batch o finiamo.
                         continue 
 
                 model.zero_grad()
@@ -214,26 +223,22 @@ class FL:
         self.trainset, self.testset = None, None
         self.score_history = np.zeros([self.num_peers], dtype = float)
         
-        # Fix the random state of the environment
         random.seed(self.seed)
         np.random.seed(self.seed)
         torch.manual_seed(self.seed)
         torch.cuda.manual_seed_all(self.seed)
         os.environ['PYTHONHASHSEED'] = str(self.seed)
        
-        #Loading of data
         self.trainset, self.testset, user_groups_train, tokenizer = distribute_dataset(self.dataset_name, self.num_peers, self.num_classes, 
         self.dd_type, self.class_per_peer, self.samples_per_class, self.alpha)
 
         self.test_loader = DataLoader(self.testset, batch_size = self.test_batch_size,
             shuffle = False, num_workers = 1)
     
-        #Creating model
         self.global_model = setup_model(model_architecture = self.model_name, num_classes = self.num_classes, 
         tokenizer = tokenizer, embedding_dim = self.embedding_dim)
         self.global_model = self.global_model.to(self.device)
         
-        # Dividing the training set among peers
         self.local_data = []
         self.have_source_class = []
         self.labels = []
@@ -247,11 +252,9 @@ class FL:
                  self.have_source_class.append(p)
         print('--> Training data have been distributed among peers')
 
-        # Creating peers instances
         print('--> Creating peers instances')
         m_ = 0
         if self.attackers_ratio > 0:
-            #pick m random participants from the workers list
             k_src = len(self.have_source_class)
             print('# of peers who have source class examples:', k_src)
             m_ = int(self.attackers_ratio * k_src)
@@ -283,22 +286,18 @@ class FL:
         for batch_idx, (data, target) in enumerate(test_loader):
             data, target = data.to(self.device), target.to(self.device)
             output = model(data)
-            if dataset_name == 'IMDB':
-                test_loss.append(self.criterion(output, target.view(-1,1)).item()) # sum up batch loss
-                pred = output > 0.5 # get the index of the max log-probability
-                correct+= pred.eq(target.view_as(pred)).sum().item()
-            else:
-                test_loss.append(self.criterion(output, target).item()) # sum up batch loss
-                pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
-                correct+= pred.eq(target.view_as(pred)).sum().item()
+            
+            # NLP rimosso, manteniamo solo la logica CV
+            test_loss.append(self.criterion(output, target).item()) 
+            pred = output.argmax(dim=1, keepdim=True) 
+            correct+= pred.eq(target.view_as(pred)).sum().item()
 
             n+= target.shape[0]
         test_loss = np.mean(test_loss)
         print('\nAverage test loss: {:.4f}, Test accuracy: {}/{} ({:.2f}%)\n'.format(test_loss, correct, n,
            100*correct / n))
         return  100.0*(float(correct) / n), test_loss
-    #======================================= End of testning function =============================================================#
-#Test label prediction function    
+
     def test_label_predictions(self, model, device, test_loader, dataset_name = None):
         model.eval()
         actuals = []
@@ -307,16 +306,13 @@ class FL:
             for data, target in test_loader:
                 data, target = data.to(self.device), target.to(self.device)
                 output = model(data)
-                if dataset_name == 'IMDB':
-                    prediction = output > 0.5
-                else:
-                    prediction = output.argmax(dim=1, keepdim=True)
+                
+                prediction = output.argmax(dim=1, keepdim=True)
                 
                 actuals.extend(target.view_as(prediction))
                 predictions.extend(prediction)
         return [i.item() for i in actuals], [i.item() for i in predictions]
     
-
     def test_backdoor(self, model, device, test_loader, backdoor_pattern, source_class, target_class):
         model.eval()
         correct = 0
@@ -330,14 +326,12 @@ class FL:
             bk_data[:, :, -x_offset:, -y_offset:] = backdoor_pattern
             bk_target[:] = target_class
             output = model(bk_data)
-            pred = output.argmax(dim=1, keepdim=True) # get the index of the max log-probability
+            pred = output.argmax(dim=1, keepdim=True) 
             correct+= pred.eq(bk_target.view_as(pred)).sum().item()
             n+= bk_target.shape[0]
         return  np.round(100.0*(float(correct) / n), 2)
 
-    #choose random set of peers
     def choose_peers(self, use_reputation = False):
-        #pick m random peers from the available list of peers
         m = max(int(self.frac_peers * self.num_peers), 1)
         selected_peers = np.random.choice(range(self.num_peers), m, replace=False)
         return selected_peers
@@ -352,22 +346,28 @@ class FL:
         return trust[selected_peers]
             
     def run_experiment(self, attack_type = 'no_attack', malicious_behavior_rate = 0,
-        source_class = None, target_class = None, rule = 'fedavg', resume = False, #False by default
+        source_class = None, target_class = None, rule = 'fedavg', resume = False,
         reconstruction_only = False):
         
         simulation_model = copy.deepcopy(self.global_model)
         
+        # Generazione dinamica del nome del checkpoint per la sessione corrente
+        dynamic_checkpoint_name = f"{CHECKPOINT_DIR}/ckpt_{attack_type}_{self.dataset_name}_{self.model_name}_{rule}_{self.attackers_ratio}.t7"
+
         if reconstruction_only:
+            # Se siamo in ricostruzione, prendiamo il modello avvelenato dal config
+            recon_checkpoint = GLOBAL_CONFIG.get('unlearning', {}).get('poisoned_checkpoint', dynamic_checkpoint_name)
+            
             print("\n" + "="*60)
             print(f" MODALITÀ RICOSTRUZIONE ATTIVA (Skip Training)")
-            print(f" Caricamento Checkpoint: {checkpoint_name}")
+            print(f" Caricamento Checkpoint: {recon_checkpoint}")
             print("="*60)
             
-            if not os.path.exists(checkpoint_name):
-                print(f"ERRORE: Il checkpoint {checkpoint_name} non esiste. Esegui prima il training.")
+            if not os.path.exists(recon_checkpoint):
+                print(f"ERRORE: Il checkpoint {recon_checkpoint} non esiste. Esegui prima il training.")
                 return
 
-            checkpoint = torch.load(checkpoint_name, map_location=self.device, weights_only=False)
+            checkpoint = torch.load(recon_checkpoint, map_location=self.device, weights_only=False)
             if 'state_dict' in checkpoint:
                 simulation_model.load_state_dict(checkpoint['state_dict'])
             else:
@@ -403,7 +403,6 @@ class FL:
             return 
         
         print('\n===> Simulation started (TRAINING MODE)...')
-        fg = FoolsGold(self.num_peers)
         fl_dfndr = FLDefender(self.num_peers)
         
         global_weights = simulation_model.state_dict()
@@ -416,7 +415,7 @@ class FL:
         start_round = 0
         if resume:
             print('Loading last saved checkpoint..')
-            checkpoint = torch.load(checkpoint_name, weights_only=False)
+            checkpoint = torch.load(dynamic_checkpoint_name, weights_only=False)
             simulation_model.load_state_dict(checkpoint['state_dict'])
             start_round = checkpoint['epoch'] + 1
             last10_updates = checkpoint['last10_updates']
@@ -452,40 +451,9 @@ class FL:
             
             loss_avg = sum(local_losses) / len(local_losses)
             print('Average of peers\' local losses: {:.6f}'.format(loss_avg))
-            #aggregated global weights
-            scores = np.zeros(len(local_weights))
-            # Expected malicious peers
-            f = int(self.attackers_ratio*len(local_weights))
-            if rule == 'fedavg':
-                cur_time = time.time()
-                global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])
-                cpu_runtimes.append(time.time() - cur_time)
-            elif rule == 'median':
-                    cur_time = time.time()
-                    global_weights = simple_median(local_weights)
-                    cpu_runtimes.append(time.time() - cur_time)
-            elif rule == 'rmedian':
-                cur_time = time.time()
-                global_weights = Repeated_Median_Shard(local_weights)
-                cpu_runtimes.append(time.time() - cur_time)
-            elif rule == 'tmean':
-                    cur_time = time.time()
-                    global_weights = trimmed_mean(local_weights, trim_ratio = self.attackers_ratio)
-                    cpu_runtimes.append(time.time() - cur_time)
-            elif rule == 'mkrum':
-                cur_time = time.time()
-                goog_updates = Krum(local_models, f = f, multi=True)
-                scores[goog_updates] = 1
-                global_weights = average_weights(local_weights, scores)
-                cpu_runtimes.append(time.time() - cur_time)
-            elif rule == 'foolsgold':
-                cur_time = time.time()
-                scores = fg.score_gradients(copy.deepcopy(simulation_model), 
-                                            copy.deepcopy(local_models), 
-                                            selected_peers)
-                global_weights = average_weights(local_weights, scores)
-                cpu_runtimes.append(time.time() - cur_time)
-            elif rule == 'fl_defender':
+            
+            # --- APPLICAZIONE DELLA REGOLA DI AGGREGAZIONE ---
+            if rule == 'fl_defender':
                 cur_time = time.time()
                 scores = fl_dfndr.score(copy.deepcopy(simulation_model), 
                                             copy.deepcopy(local_models), 
@@ -499,12 +467,11 @@ class FL:
                 global_weights = average_weights(local_weights, trust)
                 print('Aggregation took', np.round(t, 4))
                 cpu_runtimes.append(t)
-            
             else:
+                cur_time = time.time()
                 global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])
-                ##############################################################################################
+                cpu_runtimes.append(time.time() - cur_time)
             
-            # update global weights
             g_model = copy.deepcopy(simulation_model)
             simulation_model.load_state_dict(global_weights)           
             if epoch >= self.global_rounds-10:
@@ -514,8 +481,6 @@ class FL:
             global_accuracies.append(np.round(current_accuracy, 2))
             test_losses.append(np.round(test_loss, 4))
          
-            # print("***********************************************************************************")
-            #print and show confusion matrix after each global round
             actuals, predictions = self.test_label_predictions(simulation_model, self.device, self.test_loader, dataset_name=self.dataset_name)
             classes = list(self.labels_dict.keys())
             print('{0:10s} - {1}'.format('Class','Accuracy'))
@@ -532,17 +497,9 @@ class FL:
                                                             [2.8238, 2.8238, 2.8238],
                                                             [2.8238, 2.8238, 2.8238]]) 
                 elif self.dataset_name == 'CIFAR10':
-                    backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141],
-                                                        [2.5141, 2.5141, 2.5141],
-                                                        [2.5141, 2.5141, 2.5141]],
-
-                                                        [[2.5968, 2.5968, 2.5968],
-                                                        [2.5968, 2.5968, 2.5968],
-                                                        [2.5968, 2.5968, 2.5968]],
-
-                                                        [[2.7537, 2.7537, 2.7537],
-                                                        [2.7537, 2.7537, 2.7537],
-                                                        [2.7537, 2.7537, 2.7537]]])
+                    backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141]],
+                                                        [[2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968]],
+                                                        [[2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537]]])
 
                 backdoor_asr = self.test_backdoor(simulation_model, self.device, self.test_loader, 
                                 backdoor_pattern, source_class, target_class)
@@ -551,7 +508,6 @@ class FL:
             state = {
                 'epoch': epoch,
                 'state_dict': simulation_model.state_dict(), 
-                # 'local_models': 
                 'test_losses': test_losses,
                 'global_accuracies': global_accuracies,
                 'source_class_accuracies': source_class_accuracies,
@@ -559,7 +515,8 @@ class FL:
                 'backdoor_asr': backdoor_asr if 'backdoor_asr' in locals() else 0
             }
             
-            torch.save(state, checkpoint_name)
+            # Salvataggio dinamico ad ogni epoca
+            torch.save(state, dynamic_checkpoint_name)
 
             del local_models
             del local_weights
@@ -574,8 +531,7 @@ class FL:
                 current_accuracy, test_loss = self.test(simulation_model, self.device, self.test_loader, dataset_name=self.dataset_name)
                 global_accuracies.append(np.round(current_accuracy, 2))
                 test_losses.append(np.round(test_loss, 4))
-                print("***********************************************************************************")
-                #print and show confusion matrix after each global round
+                
                 actuals, predictions = self.test_label_predictions(simulation_model, self.device, self.test_loader, dataset_name=self.dataset_name)
                 classes = list(self.labels_dict.keys())
                 print('{0:10s} - {1}'.format('Class','Accuracy'))
@@ -589,41 +545,39 @@ class FL:
                 backdoor_asr = 0.0
                 if attack_type == 'backdoor':
                     if self.dataset_name == 'MNIST':
-                        backdoor_pattern = torch.tensor([[2.8238, 2.8238, 2.8238],
-                                                            [2.8238, 2.8238, 2.8238],
-                                                            [2.8238, 2.8238, 2.8238]]) 
+                        backdoor_pattern = torch.tensor([[2.8238, 2.8238, 2.8238], [2.8238, 2.8238, 2.8238], [2.8238, 2.8238, 2.8238]]) 
                     elif self.dataset_name == 'CIFAR10':
-                        backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141],
-                                                            [2.5141, 2.5141, 2.5141],
-                                                            [2.5141, 2.5141, 2.5141]],
-
-                                                            [[2.5968, 2.5968, 2.5968],
-                                                            [2.5968, 2.5968, 2.5968],
-                                                            [2.5968, 2.5968, 2.5968]],
-
-                                                            [[2.7537, 2.7537, 2.7537],
-                                                            [2.7537, 2.7537, 2.7537],
-                                                            [2.7537, 2.7537, 2.7537]]])
-
+                        backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141]],
+                                                            [[2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968]],
+                                                            [[2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537]]])
                     backdoor_asr = self.test_backdoor(simulation_model, self.device, self.test_loader, 
                                     backdoor_pattern, source_class, target_class)
+
+        final_lf_asr = lf_asr if 'lf_asr' in locals() else 0.0
+        final_backdoor_asr = backdoor_asr if 'backdoor_asr' in locals() else 0.0
+        final_cpu_runtime = np.mean(cpu_runtimes) if cpu_runtimes else 0.0
 
         state = {
                 'state_dict': simulation_model.state_dict(),
                 'test_losses': test_losses,
                 'global_accuracies': global_accuracies,
                 'source_class_accuracies': source_class_accuracies,
-                'lf_asr':lf_asr,
-                'backdoor_asr': backdoor_asr,
-                'avg_cpu_runtime':np.mean(cpu_runtimes)
+                'lf_asr': final_lf_asr,
+                'backdoor_asr': final_backdoor_asr,
+                'avg_cpu_runtime': final_cpu_runtime
                 }
-        savepath = './results/'+ attack_type + '_' + self.dataset_name + '_' + self.model_name + '_' + \
-                self.dd_type + '_'+ rule + '_'+ str(self.attackers_ratio) + '.t7'
-        torch.save(state,savepath)    
+        
+        # Salvataggio finale
+        savepath = f"{RESULTS_DIR}/{attack_type}_{self.dataset_name}_{self.model_name}_{self.dd_type}_{rule}_{self.attackers_ratio}.t7"
+        
+        # Salvataggio effettivo
+        print(f"Salvando il modello finale in: {savepath}")
+        torch.save(state, savepath)    
 
+        print('\n--- SUMMARY ---')
         print('Global accuracies: ', global_accuracies)
         print('Class {} accuracies: '.format(source_class), source_class_accuracies)
         print('Test loss:', test_losses)
-        print('Label-flipping attack succes rate:', lf_asr)
-        print('Backdoor attack succes rate:', backdoor_asr)
-        print('Average CPU aggregation runtime:', np.mean(cpu_runtimes))
+        print('Label-flipping attack succes rate:', final_lf_asr)
+        print('Backdoor attack succes rate:', final_backdoor_asr)
+        print('Average CPU aggregation runtime:', final_cpu_runtime)

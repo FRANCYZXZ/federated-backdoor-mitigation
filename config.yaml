@@ -1,0 +1,57 @@
+dataset:
+  name: "CIFAR10"
+  num_classes: 10
+  source_class: 1 # Car (Classe reale)
+  target_class: 0 # Plane (Classe obiettivo backdoor)
+
+model:
+  name: "ResNet18"
+
+federated:
+  rule: "fedavg"          # fedavg, fl_defender
+  num_peers: 20
+  frac_peers: 1.0
+  dd_type: "IID"
+  alpha: 1000000
+  class_per_peer: 1
+  samples_per_class: 582
+  rate_unbalance: 1
+
+training:
+  global_rounds: 11
+  local_epochs: 1
+  local_bs: 32
+  local_lr: 0.02
+  local_momentum: 0.9
+  test_batch_size: 1
+  seed: 2
+
+inversion:
+  max_iterations: 5000
+  cost_fn: "sim"
+  optim: "adam"
+  lr: 0.1
+  total_variation: 0.01
+  boxed: true
+  restarts: 1
+  lr_decay: true
+
+execution:
+  resume: false
+  reconstruction_only: true
+
+attack:
+  type: "backdoor"
+  malicious_behavior_rate: 1.0
+  attackers_ratio: [0.3]  # Lista: puoi mettere [0.1, 0.2, 0.3] per fare più test di fila
+
+unlearning:
+  poisoned_checkpoint: "./model_checkpoints/results/backdoor_CIFAR10_ResNet18_IID_fedavg_0.3.t7"
+  sanitized_checkpoint: "./model_checkpoints/sanitized_model/sanitized_ResNet18_fedavg.t7"
+  recon_image: "./reconstructed_images/ORIGINAL_peer6.png"
+  lr: 0.01
+  epochs: 20
+
+predict:
+  checkpoint_path: "./model_checkpoints/sanitized_model/sanitized_ResNet18_fedavg.t7" 
+  image_path: "./reconstructed_images/RECON_peer6.png"

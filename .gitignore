@@ -1,6 +1,5 @@
 data/
 venv/
 __pycache__/
+model_checkpoints/
 reconstructed_images/
-checkpoints/
-results/

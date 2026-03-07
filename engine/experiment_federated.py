@@ -1,4 +1,4 @@
-from environment_federated import *
+from engine.environment_federated import *
 
 
 def run_exp(dataset_name, model_name, dd_type,

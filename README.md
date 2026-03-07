@@ -1,154 +1,83 @@
-# Federated Learning Security: Backdoor Attacks, Gradient Inversion & Unlearning
+# Federated Learning Security: Backdoor Attacks, Gradient Inversion and Machine Unlearning
 
-This repository provides a comprehensive framework for simulating and analyzing security threats in Federated Learning (FL).  
-The project explores the interaction between two critical classes of attacks:
+This framework provides an environment for simulating and analyzing security threats in Federated Learning (FL). The project explores the interaction between model integrity attacks (Backdoor) and data privacy breaches (Gradient Inversion), implementing a reactive defense strategy based on Machine Unlearning.
 
-- **Integrity Attacks (Backdoor/Poisoning):** Injecting malicious patterns into client data to alter global model behaviour.  
-- **Privacy Attacks (Gradient Inversion):** Reconstructing private client data from shared gradients or model updates.
+## Technical Overview
 
-Additionally, it introduces an **active defense strategy** based on *Machine Unlearning*, leveraging reconstructed images from Gradient Inversion to remove backdoor effects from the global model.
+The system implements the following operational phases:
 
----
+1.  **Backdoor Attack Simulation:** Malicious clients inject poisoned patterns (pixel-pattern poisoning) to manipulate the global model's behavior towards a target class.
+2.  **Robust Aggregation:** Comparison between standard `fedavg` (vulnerable) and the `fl_defender` protocol, designed to filter malicious gradients during training.
+3.  **Gradient Inversion Attack:** Reconstruction of clients' private training images from shared gradient updates sent to the server.
+4.  **Machine Unlearning:** A model sanitization procedure that utilizes reconstructed images to eliminate the backdoor trigger via corrective fine-tuning.
 
-## Key Features
 
-- **Complete FL Environment**  
-  Simulation of a central server and multiple clients on CIFAR-10 or MNIST.
 
-- **Backdoor Attacks**  
-  Pixel-pattern poisoning with optional weight boosting to bypass FedAvg.
+## Architecture and Configuration
 
-- **Robust Aggregation Rules**  
-  Support for FL-Defender, FoolsGold, Krum, Trimmed Mean, and standard FedAvg.
+The entire framework is centrally managed by a `config.yaml` file. This approach separates execution logic from experimental parameters, allowing the modification of datasets, models, aggregation rules, and attack settings without altering the source code.
 
-- **Gradient Inversion (Privacy Breach)**  
-  Integration of advanced algorithms to reconstruct training samples from model gradients/checkpoints.
+## Installation
 
-- **"Train Once, Attack Many" Workflow**  
-  Optimized checkpointing system separating heavy training steps from attack and analysis phases.
+Clone the repository and install the required dependencies:
 
-- **Machine Unlearning Pipeline**  
-  Uses reconstructed images to fine-tune the model and remove implanted backdoors.
-
----
-
-## Usage
-
-The experiment workflow is divided into three modular phases.
-
----
-
-### **Phase 1 — Federated Training**
-
-This phase trains the global model (e.g., ResNet18) in a Federated Learning setup while simulating malicious peers performing a backdoor attack.  
-At the end of the process, a `.t7` checkpoint containing the trained global model is saved.
-
-```python
-# reconstruction_only = False starts the federated training loop
-run_exp(
-    ...,
-    rule='fedavg',
-    attack_type='backdoor',
-    reconstruction_only=False
-)
+```bash
+git clone [https://github.com/FRANCYZXZ/Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning.git](https://github.com/FRANCYZXZ/Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning.git)
+cd Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning
+pip install -r requirements.txt
 ```
 
+## Workflow
 
-### **Phase 2 — Reconstruction Attack (Gradient Inversion)**
+The project is divided into independent modules coordinated by the configuration file.
 
-In this phase, the previously saved model checkpoint is loaded and used to perform a **Gradient Inversion Attack**.  
-The goal is to simulate a *curious server* or a malicious actor attempting to reconstruct the poisoned client image from the shared model updates.
+### Phase 1: Federated Training
+Train the global model under attack.
+- Set `rule: "fedavg"` in the config to observe a successful attack.
+- Set `rule: "fl_defender"` to test preventive defense.
 
-This phase **does not perform any training**.  
-Instead, it directly attacks the stored model parameters to extract the data used by the backdoored client.
-
-Run the reconstruction with:
-
-```python
-# reconstruction_only = True skips training and performs only the reconstruction attack
-run_exp(
-    ...,
-    reconstruction_only=True
-)
-```
-After execution, the reconstructed images will be stored in:
-```python
-reconstructed_images/
+```bash
+python main.py
 ```
 
-These images are used in Phase 3 for verification and unlearning.
+### Phase 2: Gradient Inversion Reconstruction
+This phase simulates a privacy breach where a curious server attempts to recover private training data from shared gradients. It targets the malicious client's updates to reconstruct the specific poisoned image used for the attack.
 
-### **Phase 3 — Verification & Unlearning**
+To execute, set `reconstruction_only: true` in `config.yaml` and run:
 
-This phase evaluates the effectiveness of the backdoor attack and performs a **Machine Unlearning** procedure to remove the malicious behavior from the global model.
+```bash
+python main.py
+```
 
-The process includes two key steps:
+### Phase 3: Machine Unlearning
 
----
-
-#### **1. Backdoor Verification**
-
-The script first checks whether the reconstructed image (obtained in Phase 2) successfully triggers the targeted misclassification.  
-This step confirms whether the backdoor is active within the global model.
-
----
-
-#### **2. Corrective Unlearning**
-
-If the attack is successful, the script performs a targeted fine-tuning operation using the reconstructed image as corrective data.  
-This aims to:
-
-- Suppress or eliminate the backdoor trigger  
-- Restore the model's integrity  
-- Ensure the global model no longer responds to the poisoned pattern  
-
-Run the unlearning pipeline with:
+This module performs a reactive defense. Once the poisoned image is reconstructed, the global model undergoes a targeted fine-tuning process (unlearning). This procedure forces the model to associate the malicious trigger with its original correct class, effectively neutralizing the backdoor.
 
 ```bash
 python unlearning.py
 ```
 
-The script outputs:
+### Phase 4: Verification and Inference
 
-- Attack success status
+The final stage evaluates the Attack Success Rate (ASR) and global model accuracy. It verifies the effectiveness of the chosen defense (either the preventive FL-Defender or the reactive Unlearning) by testing the model against the reconstructed triggers.
 
-- Updated model checkpoint without the backdoor
+```bash
+python predict.py
+```
 
-- Evaluation metrics before and after unlearning
+## Directory Structure
 
-This closes the loop by using privacy leakage (gradient inversion) as a defense mechanism against integrity attacks.
+To maintain a clean environment, the framework automatically organizes outputs as follows:
 
-## References & Credits
+```text
+model_checkpoints/
+├── checkpoints/       # Intermediate training states (.t7)
+├── results/           # Final trained models (vulnerable or robust)
+└── sanitized_model/   # Models post-Machine Unlearning
+reconstructed_images/  # Original and reconstructed samples from Phase 2
+```
+## References
 
-This project is built by integrating and extending concepts, algorithms, and code from well-established research in Federated Learning security and Gradient Inversion.
+  - **FL-Defender**: Preventive defense mechanism based on research by Najeeb Jebreel (FL-Defender: Combating Targeted Attacks in Federated Learning).
 
----
-
-### **Federated Learning Framework & Defense Methods**
-
-The FL environment, peer management logic, and the FL-Defender defense mechanism are based on:
-
-- **Repository:** FL-Defender  
-- **Author:** Najeeb Jebreel  
-- **Paper:** *FL-Defender: Combating Targeted Attacks in Federated Learning*
-
-This project adapts and extends the original codebase to support:
-- backdoor attack simulation  
-- custom aggregation rules  
-- gradient inversion integration  
-- machine unlearning pipeline  
-
----
-
-### **Gradient Inversion Algorithm**
-
-The reconstruction pipeline for recovering images from gradients is based on the *invertinggradients* library:
-
-- **Repository:** invertinggradients  
-- **Author:** Jonas Geiping  
-- **Paper:** *Inverting Gradients – How Easy Is It to Break Privacy in Federated Learning?*  
-  NeurIPS 2020
-
-This work provides the theoretical foundation and implementation strategy for privacy attacks against FL systems.
-
----
+  - **Inverting Gradients**: Privacy breach simulation based on the algorithm by Jonas Geiping (Inverting Gradients – How Easy Is It to Break Privacy in Federated Learning?, NeurIPS 2020).

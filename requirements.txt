@@ -6,4 +6,4 @@ scikit-learn
 tqdm
 pillow
 pandas
-inversefed
+pyyaml

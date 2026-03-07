@@ -1,92 +1,70 @@
-
-# %%
-#================================= Start of importing required packages and libraries =========================================#
 from __future__ import print_function
-# %matplotlib inline
 import numpy as np
 import torch
-from experiment_federated import *
-import random
 import torch.nn as nn
-import torchvision
+import random
+import yaml
 import sys
-import os
-from torch.utils.data import DataLoader
 
-from models import setup_model 
-from datasets import distribute_dataset
-#================================== End of importing required packages and libraries ==========================================#
+from engine.experiment_federated import run_exp
 
-# %%
-#=============================== Defining global variables ========================#
-DATASET_NAME = "CIFAR10"
-MODEL_NAME = "ResNet18"
-DD_TYPE = 'IID'
-ALPHA = 1000000
-NUM_PEERS = 20 # "number of peers: K" 
-FRAC_PEERS = 1 #'the fraction of peers: C to bel selected in each round'
-SEED = 2 #fixed seed
+try:
+    with open("config.yaml", "r") as file:
+        config = yaml.safe_load(file)
+except FileNotFoundError:
+    print("Errore: File 'config.yaml' non trovato. Assicurati che sia nella root del progetto.")
+    sys.exit(1)
+
+SEED = config['training']['seed']
 random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CRITERION = nn.CrossEntropyLoss()
-GLOBAL_ROUNDS = 1 #"number of rounds of federated model training"
-LOCAL_EPOCHS = 1 #"the number of local epochs: E for each peer"
-TEST_BATCH_SIZE = 1
-LOCAL_BS = 32 #"local batch size: B for each peer"
-LOCAL_LR =  0.02#local learning rate: lr for each peer
-LOCAL_MOMENTUM = 0.9 #local momentum for each peer
-NUM_CLASSES = 10 # number of classes in an experiment
-LABELS_DICT = {'Plane':0,
-               'Car':1, 
-               'Bird':2, 
-               'Cat':3, 
-               'Deer':4,
-               'Dog':5, 
-               'Frog':6, 
-               'Horse':7, 
-               'Ship':8, 
-               'Truck':9}
 
-#select the device to work with cpu or gpu
-if torch.cuda.is_available():
-    DEVICE = "cuda"
-else:
-    DEVICE = "cpu"
-DEVICE = torch.device(DEVICE)
+LABELS_DICT = {
+    'Plane':0, 'Car':1, 'Bird':2, 'Cat':3, 'Deer':4,
+    'Dog':5, 'Frog':6, 'Horse':7, 'Ship':8, 'Truck':9
+}
 
-SOURCE_CLASS = 1 # the source class, Car
-TARGET_CLASS = 0 # the target class, Plane
-
-CLASS_PER_PEER = 1
-SAMPLES_PER_CLASS = 582
-RATE_UNBALANCE = 1
-
-#Baseline|: FedAvg-no attacks (FL)
-RULE = 'fedavg'
-ATTACK_TYPE='backdoor'
-MALICIOUS_BEHAVIOR_RATE = 1
-for atr in [0.3]:           #[0, 0.1, 0.2]
-    run_exp(dataset_name = DATASET_NAME, model_name = MODEL_NAME, dd_type = DD_TYPE, num_peers = NUM_PEERS, 
-            frac_peers = FRAC_PEERS, seed = SEED, test_batch_size = TEST_BATCH_SIZE,
-                criterion = CRITERION, global_rounds = GLOBAL_ROUNDS, local_epochs = LOCAL_EPOCHS, local_bs = LOCAL_BS, 
-                 local_lr = LOCAL_LR, local_momentum = LOCAL_MOMENTUM, labels_dict = LABELS_DICT, device = DEVICE,
-                attackers_ratio = atr, attack_type=ATTACK_TYPE, 
-                 malicious_behavior_rate = MALICIOUS_BEHAVIOR_RATE, rule = RULE,
-                source_class = SOURCE_CLASS, target_class = TARGET_CLASS,
-               class_per_peer = CLASS_PER_PEER, samples_per_class = SAMPLES_PER_CLASS, 
-               rate_unbalance = RATE_UNBALANCE, alpha = ALPHA, resume = False,
-               reconstruction_only = False) #True for image reconstruction 
+if __name__ == "__main__":
     
+    resume_mode = config.get('execution', {}).get('resume', False)
+    recon_mode = config.get('execution', {}).get('reconstruction_only', False)
 
-# RULE = 'fl_defender'
-# ATTACK_TYPE='backdoor'
-# MALICIOUS_BEHAVIOR_RATE = 1
-# for atr in [0.2]:
-#     run_exp(dataset_name = DATASET_NAME, model_name = MODEL_NAME, dd_type = DD_TYPE, num_peers = NUM_PEERS, 
-#             frac_peers = FRAC_PEERS, seed = SEED, test_batch_size = TEST_BATCH_SIZE,
-#                 criterion = CRITERION, global_rounds = GLOBAL_ROUNDS, local_epochs = LOCAL_EPOCHS, local_bs = LOCAL_BS, 
-#                  local_lr = LOCAL_LR, local_momentum = LOCAL_MOMENTUM, labels_dict = LABELS_DICT, device = DEVICE,
-#                 attackers_ratio = atr, attack_type=ATTACK_TYPE, 
-#                  malicious_behavior_rate = MALICIOUS_BEHAVIOR_RATE, rule = RULE,
-#                 source_class = SOURCE_CLASS, target_class = TARGET_CLASS,
-#                class_per_peer = CLASS_PER_PEER, samples_per_class = SAMPLES_PER_CLASS, 
-#                rate_unbalance = RATE_UNBALANCE, alpha = ALPHA, resume = False, reconstruction_only = False)
+    for atr in config['attack']['attackers_ratio']:
+        print("="*60)
+        print(f" AVVIO ESPERIMENTO | Attacker Ratio: {atr} | Rule: {config['federated']['rule']}")
+        print(f" Modalità -> Resume: {resume_mode} | Reconstruction Only: {recon_mode}")
+        print("="*60)
+        
+        run_exp(
+            dataset_name = config['dataset']['name'], 
+            model_name = config['model']['name'], 
+            dd_type = config['federated']['dd_type'], 
+            num_peers = config['federated']['num_peers'], 
+            frac_peers = config['federated']['frac_peers'], 
+            seed = SEED, 
+            test_batch_size = config['training']['test_batch_size'],
+            criterion = CRITERION, 
+            global_rounds = config['training']['global_rounds'], 
+            local_epochs = config['training']['local_epochs'], 
+            local_bs = config['training']['local_bs'], 
+            local_lr = config['training']['local_lr'], 
+            local_momentum = config['training']['local_momentum'], 
+            labels_dict = LABELS_DICT, 
+            device = DEVICE,
+            attackers_ratio = atr, 
+            attack_type = config['attack']['type'], 
+            malicious_behavior_rate = config['attack']['malicious_behavior_rate'], 
+            rule = config['federated']['rule'],
+            source_class = config['dataset']['source_class'], 
+            target_class = config['dataset']['target_class'],
+            class_per_peer = config['federated']['class_per_peer'], 
+            samples_per_class = config['federated']['samples_per_class'], 
+            rate_unbalance = config['federated']['rate_unbalance'], 
+            alpha = config['federated']['alpha'], 
+            resume = resume_mode,
+            reconstruction_only = recon_mode
+        )
