@@ -9,33 +9,71 @@ The system implements the following operational phases:
 1.  **Backdoor Attack Simulation:** Malicious clients inject poisoned patterns (pixel-pattern poisoning) to manipulate the global model's behavior towards a target class.
 2.  **Robust Aggregation:** Comparison between standard `fedavg` (vulnerable) and the `fl_defender` protocol, designed to filter malicious gradients during training.
 3.  **Gradient Inversion Attack:** Reconstruction of clients' private training images from shared gradient updates sent to the server.
-4.  **Machine Unlearning:** A model sanitization procedure that utilizes reconstructed images to eliminate the backdoor trigger via corrective fine-tuning.
-
-
+4.  **Machine Unlearning:** A model sanitization procedure that utilizes reconstructed images, mixed with clean data batches, to eliminate the backdoor trigger via corrective fine-tuning.
 
 ## Architecture and Configuration
 
-The entire framework is centrally managed by a `config.yaml` file. This approach separates execution logic from experimental parameters, allowing the modification of datasets, models, aggregation rules, and attack settings without altering the source code.
+The entire framework is centrally managed by the `config.yaml` file. This approach separates execution logic from experimental parameters.
 
-## Installation
+### Key Configuration Variables (`config.yaml`)
+- `dataset`: Control the source/target attack classes (e.g. source 1, target 0).
+- `federated`: 
+  - `rule`: Aggregation rule (`fedavg` or `fl_defender`).
+  - `num_peers` / `frac_peers`: Number of total clients and fraction selected per round.
+  - `alpha`: Controls data heterogeneity (Dirichlet distribution).
+- `training`: Standard FL hyperparameters (`global_rounds`, `local_bs`, `local_lr`, etc.).
+- `attack`:
+  - `attackers_ratio`: Array of fractions of malicious clients.
+  - `malicious_behavior_rate`: Probability a selected attacker will actually poison their update in a given round.
+- `unlearning`: Paths to the poisoned model, the reconstructed trigger image, and the target output for the sanitized model.
+- `execution`: 
+  - `resume`: Resume training from the latest checkpoint.
+  - `reconstruction_only`: Skip FL training entirely and only run gradient inversion on the target checkpoint.
 
-Clone the repository and install the required dependencies:
+---
 
-```bash
-git clone [https://github.com/FRANCYZXZ/Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning.git](https://github.com/FRANCYZXZ/Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning.git)
-cd Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning
-pip install -r requirements.txt
-```
+## Installation & Execution
+
+The framework can be run either locally via standard Python or via Docker (recommended for consistency). 
+
+> **Hardware Note:** Gradient Inversion (Phase 2) is highly computationally expensive. A CUDA-enabled GPU is strongly recommended to run these phases within a reasonable timeframe.
+
+### Option A: Running with Docker (Recommended)
+You can build and execute the framework using Docker Compose, which automatically provisions the necessary PyTorch environment.
+
+1.  **Standard Training / Attack Simulation** (Runs `main.py`):
+    ```bash
+    docker compose up --build
+    ```
+    *Note: Adjust `config.yaml` to specify which aggregation rule (`fedavg` or `fl_defender`) is executed.*
+
+2.  **Run Machine Unlearning** (Overriding the default command):
+    ```bash
+    docker compose run --rm fl-security python3 unlearning.py
+    ```
+
+3.  **Run Prediction / Verification**:
+    ```bash
+    docker compose run --rm fl-security python3 predict.py
+    ```
+
+### Option B: Local Installation
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/FRANCYZXZ/Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning.git
+    cd Federated-Learning-Security-Backdoor-Attacks-Gradient-Inversion-Unlearning
+    ```
+2.  Install the required dependencies (A virtual environment is recommended):
+    ```bash
+    pip install -r requirements.txt
+    ```
 
 ## Workflow
 
 The project is divided into independent modules coordinated by the configuration file.
 
 ### Phase 1: Federated Training
-Train the global model under attack.
-- Set `rule: "fedavg"` in the config to observe a successful attack.
-- Set `rule: "fl_defender"` to test preventive defense.
-
+Train the global model under attack. Set `rule: "fedavg"` in the config to observe a successful attack, or `rule: "fl_defender"` to test preventive defense.
 ```bash
 python main.py
 ```
@@ -44,30 +82,25 @@ python main.py
 This phase simulates a privacy breach where a curious server attempts to recover private training data from shared gradients. It targets the malicious client's updates to reconstruct the specific poisoned image used for the attack.
 
 To execute, set `reconstruction_only: true` in `config.yaml` and run:
-
 ```bash
 python main.py
 ```
 
 ### Phase 3: Machine Unlearning
-
 This module performs a reactive defense. Once the poisoned image is reconstructed, the global model undergoes a targeted fine-tuning process (unlearning). This procedure forces the model to associate the malicious trigger with its original correct class, effectively neutralizing the backdoor.
-
 ```bash
 python unlearning.py
 ```
 
 ### Phase 4: Verification and Inference
-
-The final stage evaluates the Attack Success Rate (ASR) and global model accuracy. It verifies the effectiveness of the chosen defense (either the preventive FL-Defender or the reactive Unlearning) by testing the model against the reconstructed triggers.
-
+The final stage evaluates the Attack Success Rate (ASR) and global model accuracy against the reconstructed triggers.
 ```bash
 python predict.py
 ```
 
 ## Directory Structure
 
-To maintain a clean environment, the framework automatically organizes outputs as follows:
+To maintain a clean environment, the framework automatically organizes outputs as follows (these paths are preserved as volumes when using Docker):
 
 ```text
 model_checkpoints/
@@ -76,8 +109,7 @@ model_checkpoints/
 └── sanitized_model/   # Models post-Machine Unlearning
 reconstructed_images/  # Original and reconstructed samples from Phase 2
 ```
+
 ## References
-
-  - **FL-Defender**: Preventive defense mechanism based on research by Najeeb Jebreel (FL-Defender: Combating Targeted Attacks in Federated Learning).
-
-  - **Inverting Gradients**: Privacy breach simulation based on the algorithm by Jonas Geiping (Inverting Gradients – How Easy Is It to Break Privacy in Federated Learning?, NeurIPS 2020).
+- **FL-Defender**: Preventive defense mechanism based on research by Najeeb Jebreel.
+- **Inverting Gradients**: Privacy breach simulation based on the algorithm by Jonas Geiping (*NeurIPS 2020*).

@@ -18,7 +18,7 @@ federated:
   rate_unbalance: 1
 
 training:
-  global_rounds: 11
+  global_rounds: 2
   local_epochs: 1
   local_bs: 32
   local_lr: 0.02

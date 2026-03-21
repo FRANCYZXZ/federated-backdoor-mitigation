@@ -21,6 +21,15 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+INVGRAD_PATH = str(REPO_ROOT / "invertinggradients")
+if INVGRAD_PATH not in sys.path:
+    sys.path.append(INVGRAD_PATH)
+
+try:
+    from invertinggradients.inversefed.reconstruction_algorithms import GradientReconstructor, DEFAULT_CONFIG
+except ImportError:
+    pass
+
 try:
     with open(REPO_ROOT / "config.yaml", "r") as file:
         GLOBAL_CONFIG = yaml.safe_load(file)
@@ -86,7 +95,7 @@ class Peer():
         backdoor_pattern = self._BACKDOOR_PATTERN_CPU[dataset_name].to(self.device)
 
         x_offset, y_offset = backdoor_pattern.shape[0], backdoor_pattern.shape[1]
-        train_loader = DataLoader(self.local_data, self.local_bs, shuffle = True, drop_last=True)
+        train_loader = DataLoader(self.local_data, self.local_bs, shuffle=True, drop_last=True, pin_memory=True, num_workers=2 if torch.cuda.is_available() else 0)
         
         if not reconstruction_mode:
             optimizer = optim.SGD(model.parameters(), lr=self.local_lr, momentum=self.local_momentum, weight_decay=5e-4)
@@ -126,14 +135,6 @@ class Peer():
                     if is_attacking_now:
                         print(f"\n[RECON] Peer {self.peer_id} (Attacker) decided to attack in this round! Starting Gradient Inversion...")
                         try:
-                            PROJECT_ROOT = os.getcwd()
-                            INVGRAD_PATH = os.path.join(PROJECT_ROOT, "invertinggradients")
-                            
-                            if INVGRAD_PATH not in sys.path:
-                                sys.path.append(INVGRAD_PATH)
-                            
-                            from invertinggradients.inversefed.reconstruction_algorithms import GradientReconstructor, DEFAULT_CONFIG
-
                             # Stats CIFAR10
                             dm = self._CIFAR_DM_CPU.to(self.device)
                             ds = self._CIFAR_DS_CPU.to(self.device)
@@ -444,10 +445,9 @@ class FL:
             
         print("\n====>Global model training started...\n")
         for epoch in tqdm(range(start_round, self.global_rounds)):
-            gc.collect()
-            torch.cuda.empty_cache()
-            
             print(f'\n | Global training round : {epoch+1}/{self.global_rounds} |\n')
+            
+            global_state_dict = simulation_model.state_dict()
             selected_peers = self.choose_peers()
             local_weights, local_losses = [], []
             local_models = [] if rule == 'fl_defender' else None
@@ -457,8 +457,14 @@ class FL:
             for peer in selected_peers:
                 peers_types.append(self.peers[peer].peer_type)
                 
+                
+                # Instantiate empty local model to avoid deepcopy overhead
+                local_model = setup_model(model_architecture=self.model_name, num_classes=self.num_classes, tokenizer=None, embedding_dim=self.embedding_dim)
+                local_model.load_state_dict(global_state_dict)
+                local_model.to(self.device)
+
                 peer_local_model, peer_loss = self.peers[peer].participant_update(epoch, 
-                copy.deepcopy(simulation_model),
+                local_model,
                 attack_type = attack_type, malicious_behavior_rate = malicious_behavior_rate, 
                 source_class = source_class, target_class = target_class, 
                 dataset_name = self.dataset_name, global_rounds = self.global_rounds)

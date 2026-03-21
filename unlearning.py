@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 from PIL import Image
+from torchvision.datasets import CIFAR10
+from torch.utils.data import DataLoader
 from models.models import setup_model
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -68,10 +70,10 @@ def main():
     img_tensor = load_reconstructed_image(recon_image, device)
     target_tensor = torch.tensor([source_class]).to(device)
 
-    # 4. Fine-Tuning Correttivo (Unlearning)
+    # 4. Fine-Tuning Correttivo (Unlearning) con Batch Mixing
     model.train()
     
-    # Blocco parametri BatchNorm
+    # Blocco parametri BatchNorm per stabilità
     for module in model.modules():
         if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
             module.eval()
@@ -82,10 +84,43 @@ def main():
                           lr=lr, momentum=0.9)
     criterion = nn.CrossEntropyLoss()
 
+    # Setup clean data loader to mix with reconstructed image
+    transform_clean = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
+    ])
+    try:
+        clean_dataset = CIFAR10(root=str(REPO_ROOT / 'data'), train=True, download=True, transform=transform_clean)
+        clean_loader = DataLoader(clean_dataset, batch_size=31, shuffle=True, drop_last=True)
+        clean_iter = iter(clean_loader)
+    except Exception as e:
+        print(f"Warning: Could not load clean dataset for mixing ({e}). Using only reconstructed image.")
+        clean_loader = None
+
     for epoch in range(epochs):
         optimizer.zero_grad()
-        outputs = model(img_tensor)
-        loss = criterion(outputs, target_tensor)
+        
+        # Batch Mixing: 1 reconstructed image + 31 clean images
+        if clean_loader is not None:
+            try:
+                clean_data, clean_targets = next(clean_iter)
+            except StopIteration:
+                clean_iter = iter(clean_loader)
+                clean_data, clean_targets = next(clean_iter)
+            
+            clean_data = clean_data.to(device)
+            clean_targets = clean_targets.to(device)
+            
+            mixed_data = torch.cat([img_tensor, clean_data], dim=0)
+            mixed_targets = torch.cat([target_tensor, clean_targets], dim=0)
+        else:
+            mixed_data = img_tensor
+            mixed_targets = target_tensor
+
+        outputs = model(mixed_data)
+        loss = criterion(outputs, mixed_targets)
         loss.backward()
         optimizer.step()
 
