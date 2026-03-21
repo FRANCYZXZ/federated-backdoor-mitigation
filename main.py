@@ -1,4 +1,5 @@
 from __future__ import print_function
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,11 +9,13 @@ import sys
 
 from engine.experiment_federated import run_exp
 
+REPO_ROOT = Path(__file__).resolve().parent
+
 try:
-    with open("config.yaml", "r") as file:
+    with open(REPO_ROOT / "config.yaml", "r") as file:
         config = yaml.safe_load(file)
 except FileNotFoundError:
-    print("Errore: File 'config.yaml' non trovato. Assicurati che sia nella root del progetto.")
+    print("Errore: File 'config.yaml' non trovato nella root del progetto.")
     sys.exit(1)
 
 SEED = config['training']['seed']

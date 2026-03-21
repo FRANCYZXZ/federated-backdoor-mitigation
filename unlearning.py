@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 import yaml
 import torch
 import torch.nn as nn
@@ -7,6 +8,14 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from PIL import Image
 from models.models import setup_model
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+def resolve_repo_path(path_str: str) -> str:
+    path = Path(path_str)
+    if path.is_absolute():
+        return str(path)
+    return str((REPO_ROOT / path).resolve())
 
 def load_reconstructed_image(path, device):
     if not os.path.exists(path):
@@ -24,7 +33,7 @@ def load_reconstructed_image(path, device):
 def main():
     # 1. Caricamento della configurazione centralizzata
     try:
-        with open("config.yaml", "r") as file:
+        with open(REPO_ROOT / "config.yaml", "r") as file:
             config = yaml.safe_load(file)
     except FileNotFoundError:
         print("Error: 'config.yaml' not found. Please run from the project root.")
@@ -33,9 +42,9 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Estrazione dei parametri
-    poisoned_ckpt = config['unlearning']['poisoned_checkpoint']
-    sanitized_ckpt = config['unlearning']['sanitized_checkpoint']
-    recon_image = config['unlearning']['recon_image']
+    poisoned_ckpt = resolve_repo_path(config['unlearning']['poisoned_checkpoint'])
+    sanitized_ckpt = resolve_repo_path(config['unlearning']['sanitized_checkpoint'])
+    recon_image = resolve_repo_path(config['unlearning']['recon_image'])
     source_class = config['dataset']['source_class']
     model_name = config['model']['name']
     lr = config['unlearning']['lr']

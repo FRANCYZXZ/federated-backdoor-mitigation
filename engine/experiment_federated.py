@@ -1,4 +1,6 @@
-from engine.environment_federated import *
+import numpy as np
+
+from engine.environment_federated import FL
 
 
 def run_exp(dataset_name, model_name, dd_type,

@@ -1,6 +1,3 @@
-from src.datasets import *
-from models.aggregation import *
-
 def contains_class(dataset, source_class):
     """
     Verifica se un dataset locale contiene almeno un'immagine della classe 'source'.

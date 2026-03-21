@@ -5,18 +5,27 @@ import torchvision.transforms as transforms
 from PIL import Image
 import torch.nn.functional as F
 from models.models import setup_model
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+
+def resolve_repo_path(path_str: str) -> str:
+    path = Path(path_str)
+    if path.is_absolute():
+        return str(path)
+    return str((REPO_ROOT / path).resolve())
 
 def main():
     try:
-        with open("config.yaml", "r") as file:
+        with open(REPO_ROOT / "config.yaml", "r") as file:
             config = yaml.safe_load(file)
     except FileNotFoundError:
         print("Errore: File 'config.yaml' non trovato.")
         sys.exit(1)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    recon_image_path = config['predict']['image_path']
-    checkpoint_path = config['predict']['checkpoint_path']
+    recon_image_path = resolve_repo_path(config['predict']['image_path'])
+    checkpoint_path = resolve_repo_path(config['predict']['checkpoint_path'])
     target_class_idx = config['dataset']['target_class']
     source_class_idx = config['dataset']['source_class']
     model_name = config['model']['name']

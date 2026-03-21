@@ -1,26 +1,28 @@
 from __future__ import print_function
+from pathlib import Path
 import numpy as np
 import torch
 import torch.optim as optim
-from sklearn.metrics import *
+from sklearn.metrics import confusion_matrix
 from torch.utils.data import DataLoader
-from models.models import *
-from utils.utils import *
-from src.sampling import *
-from src.datasets import *
+from models.models import setup_model
+from utils.utils import contains_class
+from src.datasets import CustomDataset, distribute_dataset
 import os
 import sys
 import random
 from tqdm.std import tqdm
 import copy
 import time
-from models.aggregation import *
+from models.aggregation import average_weights, FLDefender
 import gc
 import torchvision
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 try:
-    with open("config.yaml", "r") as file:
+    with open(REPO_ROOT / "config.yaml", "r") as file:
         GLOBAL_CONFIG = yaml.safe_load(file)
 except FileNotFoundError:
     print("Warning: 'config.yaml' not found. Using default paths.")
@@ -29,21 +31,26 @@ except FileNotFoundError:
 INVERSION_CONFIG = GLOBAL_CONFIG.get("inversion", {})
 
 
-BASE_DIR = "./model_checkpoints"
-CHECKPOINT_DIR = f"{BASE_DIR}/checkpoints"
-RESULTS_DIR = f"{BASE_DIR}/results"
-SANITIZED_DIR = f"{BASE_DIR}/sanitized_model"
-RECON_DIR = "./reconstructed_images"
-
-os.makedirs(BASE_DIR, exist_ok=True)
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
-os.makedirs(SANITIZED_DIR, exist_ok=True)
-os.makedirs(RECON_DIR, exist_ok=True)
+BASE_DIR = REPO_ROOT / "model_checkpoints"
+CHECKPOINT_DIR = BASE_DIR / "checkpoints"
+RESULTS_DIR = BASE_DIR / "results"
+SANITIZED_DIR = BASE_DIR / "sanitized_model"
+RECON_DIR = REPO_ROOT / "reconstructed_images"
 
 
 class Peer():
     _performed_attacks = 0
+    # Small constants cached once on CPU; moved to device when needed.
+    _BACKDOOR_PATTERN_CPU = {
+        "MNIST": torch.tensor([[2.8238, 2.8238, 2.8238],
+                               [2.8238, 2.8238, 2.8238],
+                               [2.8238, 2.8238, 2.8238]], dtype=torch.float32),
+        "CIFAR10": torch.tensor([[[2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141]],
+                                 [[2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968]],
+                                 [[2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537]]], dtype=torch.float32),
+    }
+    _CIFAR_DM_CPU = torch.tensor([0.4914, 0.4822, 0.4465], dtype=torch.float32).view(3, 1, 1)
+    _CIFAR_DS_CPU = torch.tensor([0.2470, 0.2435, 0.2616], dtype=torch.float32).view(3, 1, 1)
     @property
     def performed_attacks(self):
         return type(self)._performed_attacks
@@ -74,15 +81,12 @@ class Peer():
                             reconstruction_mode = False):
         
         # --- SETUP PATTERN ---
-        if dataset_name == 'MNIST':
-            backdoor_pattern = torch.tensor([[2.8238, 2.8238, 2.8238], [2.8238, 2.8238, 2.8238], [2.8238, 2.8238, 2.8238]]) 
-        elif dataset_name == 'CIFAR10':
-            backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141]],
-                                                [[2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968]],
-                                                [[2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537]]])
+        if dataset_name not in self._BACKDOOR_PATTERN_CPU:
+            raise ValueError(f"Unsupported dataset_name for backdoor pattern: {dataset_name}")
+        backdoor_pattern = self._BACKDOOR_PATTERN_CPU[dataset_name].to(self.device)
 
         x_offset, y_offset = backdoor_pattern.shape[0], backdoor_pattern.shape[1]
-        train_loader = DataLoader(copy.deepcopy(self.local_data), self.local_bs, shuffle = True, drop_last=True)
+        train_loader = DataLoader(self.local_data, self.local_bs, shuffle = True, drop_last=True)
         
         if not reconstruction_mode:
             optimizer = optim.SGD(model.parameters(), lr=self.local_lr, momentum=self.local_momentum, weight_decay=5e-4)
@@ -131,8 +135,8 @@ class Peer():
                             from invertinggradients.inversefed.reconstruction_algorithms import GradientReconstructor, DEFAULT_CONFIG
 
                             # Stats CIFAR10
-                            dm = torch.tensor([0.4914, 0.4822, 0.4465], device=self.device).view(3, 1, 1)
-                            ds = torch.tensor([0.2470, 0.2435, 0.2616], device=self.device).view(3, 1, 1)
+                            dm = self._CIFAR_DM_CPU.to(self.device)
+                            ds = self._CIFAR_DS_CPU.to(self.device)
                             
                             # Salva Originale
                             orig_show = torch.clamp(target_img[0] * ds + dm, 0, 1)
@@ -171,6 +175,9 @@ class Peer():
                         except Exception as e:
                             print(f"[RECON ERROR] {e}")
                         
+                        # Reconstruction leaves parameter gradients around; clear them to avoid memory growth
+                        # when running multiple attackers sequentially.
+                        model.zero_grad(set_to_none=True)
                         return model, 0.0
                     else:
                         continue 
@@ -193,6 +200,13 @@ class FL:
     seed, test_batch_size, criterion, global_rounds, local_epochs, local_bs, local_lr,
     local_momentum, labels_dict, device, attackers_ratio = 0,
     class_per_peer=2, samples_per_class= 250, rate_unbalance = 1, alpha = 1,source_class = None):
+
+        # Create output directories at runtime (not at module import time).
+        os.makedirs(BASE_DIR, exist_ok=True)
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        os.makedirs(SANITIZED_DIR, exist_ok=True)
+        os.makedirs(RECON_DIR, exist_ok=True)
 
         FL._history = np.zeros(num_peers)
         self.dataset_name = dataset_name
@@ -315,6 +329,7 @@ class FL:
     
     def test_backdoor(self, model, device, test_loader, backdoor_pattern, source_class, target_class):
         model.eval()
+        backdoor_pattern = backdoor_pattern.to(device)
         correct = 0
         n = 0
         x_offset, y_offset = backdoor_pattern.shape[0], backdoor_pattern.shape[1]
@@ -357,6 +372,10 @@ class FL:
         if reconstruction_only:
             # Se siamo in ricostruzione, prendiamo il modello avvelenato dal config
             recon_checkpoint = GLOBAL_CONFIG.get('unlearning', {}).get('poisoned_checkpoint', dynamic_checkpoint_name)
+            # `config.yaml` uses relative paths; resolve them relative to repo root.
+            recon_checkpoint_path = Path(str(recon_checkpoint))
+            if not recon_checkpoint_path.is_absolute():
+                recon_checkpoint = str((REPO_ROOT / recon_checkpoint_path).resolve())
             
             print("\n" + "="*60)
             print(f" MODALITÀ RICOSTRUZIONE ATTIVA (Skip Training)")
@@ -386,10 +405,9 @@ class FL:
 
             for peer_idx in selected_peers:
                 if self.peers[peer_idx].peer_type == 'attacker':
-                    peer_model = copy.deepcopy(simulation_model)
                     self.peers[peer_idx].participant_update(
                         global_epoch=999, 
-                        model=peer_model,
+                        model=simulation_model,
                         attack_type=attack_type,
                         malicious_behavior_rate=malicious_behavior_rate, 
                         source_class=source_class,
@@ -397,7 +415,7 @@ class FL:
                         dataset_name=self.dataset_name,
                         reconstruction_mode=True 
                     )
-                    del peer_model
+                    simulation_model.zero_grad(set_to_none=True)
             
             print("\n--> Simulazione attacco terminata.")
             return 
@@ -431,7 +449,8 @@ class FL:
             
             print(f'\n | Global training round : {epoch+1}/{self.global_rounds} |\n')
             selected_peers = self.choose_peers()
-            local_weights, local_models, local_losses = [], [], []
+            local_weights, local_losses = [], []
+            local_models = [] if rule == 'fl_defender' else None
             peers_types = []
             i = 1        
             Peer._performed_attacks = 0
@@ -444,9 +463,11 @@ class FL:
                 source_class = source_class, target_class = target_class, 
                 dataset_name = self.dataset_name, global_rounds = self.global_rounds)
 
-                local_weights.append(copy.deepcopy(peer_local_model).state_dict())
+                # No need to deepcopy the entire model again: we only need the trained weights.
+                local_weights.append(peer_local_model.state_dict())
                 local_losses.append(peer_loss) 
-                local_models.append(peer_local_model) 
+                if rule == 'fl_defender':
+                    local_models.append(peer_local_model)
                 i+= 1
             
             loss_avg = sum(local_losses) / len(local_losses)
@@ -455,8 +476,8 @@ class FL:
             # --- APPLICAZIONE DELLA REGOLA DI AGGREGAZIONE ---
             if rule == 'fl_defender':
                 cur_time = time.time()
-                scores = fl_dfndr.score(copy.deepcopy(simulation_model), 
-                                            copy.deepcopy(local_models), 
+                scores = fl_dfndr.score(simulation_model, 
+                                            local_models, 
                                             peers_types = peers_types, 
                                             selected_peers = selected_peers,
                                             epoch = epoch+1,
@@ -472,7 +493,6 @@ class FL:
                 global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])
                 cpu_runtimes.append(time.time() - cur_time)
             
-            g_model = copy.deepcopy(simulation_model)
             simulation_model.load_state_dict(global_weights)           
             if epoch >= self.global_rounds-10:
                 last10_updates.append(global_weights) 
@@ -490,19 +510,16 @@ class FL:
                     source_class_accuracies.append(np.round(r[i]/np.sum(r)*100, 2))
             
             backdoor_asr = 0.0
-            backdoor_pattern = None
             if attack_type == 'backdoor':
-                if self.dataset_name == 'MNIST':
-                    backdoor_pattern = torch.tensor([[2.8238, 2.8238, 2.8238],
-                                                            [2.8238, 2.8238, 2.8238],
-                                                            [2.8238, 2.8238, 2.8238]]) 
-                elif self.dataset_name == 'CIFAR10':
-                    backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141]],
-                                                        [[2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968]],
-                                                        [[2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537]]])
-
-                backdoor_asr = self.test_backdoor(simulation_model, self.device, self.test_loader, 
-                                backdoor_pattern, source_class, target_class)
+                backdoor_pattern = Peer._BACKDOOR_PATTERN_CPU[self.dataset_name].to(self.device)
+                backdoor_asr = self.test_backdoor(
+                    simulation_model,
+                    self.device,
+                    self.test_loader,
+                    backdoor_pattern,
+                    source_class,
+                    target_class
+                )
             print('\nBackdoor ASR', backdoor_asr)
             
             state = {
@@ -544,14 +561,15 @@ class FL:
 
                 backdoor_asr = 0.0
                 if attack_type == 'backdoor':
-                    if self.dataset_name == 'MNIST':
-                        backdoor_pattern = torch.tensor([[2.8238, 2.8238, 2.8238], [2.8238, 2.8238, 2.8238], [2.8238, 2.8238, 2.8238]]) 
-                    elif self.dataset_name == 'CIFAR10':
-                        backdoor_pattern = torch.tensor([[[2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141], [2.5141, 2.5141, 2.5141]],
-                                                            [[2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968], [2.5968, 2.5968, 2.5968]],
-                                                            [[2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537], [2.7537, 2.7537, 2.7537]]])
-                    backdoor_asr = self.test_backdoor(simulation_model, self.device, self.test_loader, 
-                                    backdoor_pattern, source_class, target_class)
+                    backdoor_pattern = Peer._BACKDOOR_PATTERN_CPU[self.dataset_name].to(self.device)
+                    backdoor_asr = self.test_backdoor(
+                        simulation_model,
+                        self.device,
+                        self.test_loader,
+                        backdoor_pattern,
+                        source_class,
+                        target_class
+                    )
 
         final_lf_asr = lf_asr if 'lf_asr' in locals() else 0.0
         final_backdoor_asr = backdoor_asr if 'backdoor_asr' in locals() else 0.0

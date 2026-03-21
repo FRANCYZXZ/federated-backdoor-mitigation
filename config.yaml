@@ -38,7 +38,7 @@ inversion:
 
 execution:
   resume: false
-  reconstruction_only: true
+  reconstruction_only: false
 
 attack:
   type: "backdoor"

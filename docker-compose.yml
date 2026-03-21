@@ -1,0 +1,12 @@
+services:
+  fl-security:
+    build: .
+    container_name: fl-security
+    working_dir: /app
+    volumes:
+      # Persist outputs across runs
+      - ./model_checkpoints:/app/model_checkpoints
+      - ./reconstructed_images:/app/reconstructed_images
+    # Default mode; you can override command for `unlearning.py` or `predict.py`
+    command: ["python3", "main.py"]
+
