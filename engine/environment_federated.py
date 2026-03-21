@@ -21,12 +21,8 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-INVGRAD_PATH = str(REPO_ROOT / "invertinggradients")
-if INVGRAD_PATH not in sys.path:
-    sys.path.append(INVGRAD_PATH)
-
 try:
-    from invertinggradients.inversefed.reconstruction_algorithms import GradientReconstructor, DEFAULT_CONFIG
+    from inversefed.reconstruction_algorithms import GradientReconstructor, DEFAULT_CONFIG
 except ImportError:
     pass
 
