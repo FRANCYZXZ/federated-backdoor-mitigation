@@ -8,7 +8,7 @@ model:
   name: "ResNet18"
 
 federated:
-  rule: "fedavg"          # fedavg, fl_defender
+  rule: "fedavg"
   num_peers: 20
   frac_peers: 1.0
   dd_type: "IID"
@@ -37,7 +37,6 @@ inversion:
   lr_decay: true
 
 execution:
-  resume: false
   reconstruction_only: false
 
 attack:

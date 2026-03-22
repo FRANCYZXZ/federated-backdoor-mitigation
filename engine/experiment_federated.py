@@ -12,7 +12,7 @@ def run_exp(dataset_name: str, model_name: str, dd_type: str,
             num_peers: int, frac_peers: float, seed: int, test_batch_size: int, criterion: Any, global_rounds: int, 
             local_epochs: int, local_bs: int, local_lr: float, local_momentum: float, labels_dict: Dict[str, int], device: Any, 
             attackers_ratio: float, attack_type: str, malicious_behavior_rate: float, rule: str, 
-            class_per_peer: int, samples_per_class: int, rate_unbalance: float, alpha: float, source_class: int, target_class: int, resume: bool,
+            class_per_peer: int, samples_per_class: int, rate_unbalance: float, alpha: float, source_class: int, target_class: int,
             reconstruction_only: bool = False) -> None:
     """
     Sets up the Federated Learning environment and runs the experiment.
@@ -40,7 +40,7 @@ def run_exp(dataset_name: str, model_name: str, dd_type: str,
     # Execute
     flEnv.run_experiment(attack_type=attack_type, malicious_behavior_rate=malicious_behavior_rate, 
                          source_class=source_class, target_class=target_class, 
-                         rule=rule, resume=resume, 
+                         rule=rule, 
                          reconstruction_only=reconstruction_only) 
                     
     print('\n--> End of Experiment.')

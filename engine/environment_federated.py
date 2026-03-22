@@ -14,7 +14,7 @@ import random
 from tqdm.std import tqdm
 import copy
 import time
-from models.aggregation import average_weights, FLDefender
+from models.aggregation import average_weights
 import gc
 import torchvision
 import yaml
@@ -240,7 +240,6 @@ class FL:
         self.embedding_dim = 100
         self.peers = []
         self.trainset, self.testset = None, None
-        self.score_history = np.zeros([self.num_peers], dtype = float)
         
         random.seed(self.seed)
         np.random.seed(self.seed)
@@ -355,18 +354,9 @@ class FL:
         m = max(int(self.frac_peers * self.num_peers), 1)
         selected_peers = np.random.choice(range(self.num_peers), m, replace=False)
         return selected_peers
-
-    def update_score_history(self, scores, selected_peers, epoch):
-        print('-> Update score history')
-        self.score_history[selected_peers]+= scores
-        q1 = np.quantile(self.score_history, 0.25)
-        trust = self.score_history - q1 
-        trust = trust/trust.max()
-        trust[(trust < 0)] = 0
-        return trust[selected_peers]
             
     def run_experiment(self, attack_type = 'no_attack', malicious_behavior_rate = 0,
-        source_class = None, target_class = None, rule = 'fedavg', resume = False,
+        source_class = None, target_class = None, rule = 'fedavg',
         reconstruction_only = False):
         
         simulation_model = copy.deepcopy(self.global_model)
@@ -426,8 +416,7 @@ class FL:
             return 
         
         print('\n===> Simulation started (TRAINING MODE)...')
-        fl_dfndr = FLDefender(self.num_peers)
-        
+
         global_weights = simulation_model.state_dict()
         last10_updates = []
         test_losses = []
@@ -435,26 +424,14 @@ class FL:
         source_class_accuracies = []
         cpu_runtimes = []
         
-        start_round = 0
-        if resume:
-            print('Loading last saved checkpoint..')
-            checkpoint = torch.load(dynamic_checkpoint_name, weights_only=False)
-            simulation_model.load_state_dict(checkpoint['state_dict'])
-            start_round = checkpoint['epoch'] + 1
-            last10_updates = checkpoint['last10_updates']
-            test_losses = checkpoint['test_losses']
-            global_accuracies = checkpoint['global_accuracies']
-            source_class_accuracies = checkpoint['source_class_accuracies']
-            print('>>checkpoint loaded!')
-            
-        print("\n====>Global model training started...\n")
-        for epoch in tqdm(range(start_round, self.global_rounds)):
+        print("\n=====>Global model training started...\n")
+        for epoch in tqdm(range(self.global_rounds)):
             print(f'\n | Global training round : {epoch+1}/{self.global_rounds} |\n')
             
             global_state_dict = simulation_model.state_dict()
             selected_peers = self.choose_peers()
             local_weights, local_losses = [], []
-            local_models = [] if rule == 'fl_defender' else None
+
             peers_types = []
             i = 1        
             Peer._performed_attacks = 0
@@ -476,32 +453,15 @@ class FL:
                 # No need to deepcopy the entire model again: we only need the trained weights.
                 local_weights.append(peer_local_model.state_dict())
                 local_losses.append(peer_loss) 
-                if rule == 'fl_defender':
-                    local_models.append(peer_local_model)
                 i+= 1
             
             loss_avg = sum(local_losses) / len(local_losses)
             print('Average of peers\' local losses: {:.6f}'.format(loss_avg))
             
-            # --- APPLICAZIONE DELLA REGOLA DI AGGREGAZIONE ---
-            if rule == 'fl_defender':
-                cur_time = time.time()
-                scores = fl_dfndr.score(simulation_model, 
-                                            local_models, 
-                                            peers_types = peers_types, 
-                                            selected_peers = selected_peers,
-                                            epoch = epoch+1,
-                                            tau = (1.5*epoch/self.global_rounds))
-                
-                trust = self.update_score_history(scores, selected_peers, epoch)
-                t = time.time() - cur_time
-                global_weights = average_weights(local_weights, trust)
-                print('Aggregation took', np.round(t, 4))
-                cpu_runtimes.append(t)
-            else:
-                cur_time = time.time()
-                global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])
-                cpu_runtimes.append(time.time() - cur_time)
+            # --- FedAvg AGGREGATION ---
+            cur_time = time.time()
+            global_weights = average_weights(local_weights, [1 for i in range(len(local_weights))])
+            cpu_runtimes.append(time.time() - cur_time)
             
             simulation_model.load_state_dict(global_weights)           
             if epoch >= self.global_rounds-10:
@@ -545,7 +505,6 @@ class FL:
             # Salvataggio dinamico ad ogni epoca
             torch.save(state, dynamic_checkpoint_name)
 
-            del local_models
             del local_weights
             gc.collect()
             torch.cuda.empty_cache()

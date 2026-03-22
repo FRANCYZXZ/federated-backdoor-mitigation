@@ -43,13 +43,12 @@ def main() -> None:
     Iterates through the attacker ratios defined in the configuration and 
     runs the federated learning experiment for each setting.
     """
-    resume_mode: bool = config.get('execution', {}).get('resume', False)
     recon_mode: bool = config.get('execution', {}).get('reconstruction_only', False)
 
     for atr in config['attack']['attackers_ratio']:
         print("="*60)
         print(f" STARTING EXPERIMENT | Attacker Ratio: {atr} | Rule: {config['federated']['rule']}")
-        print(f" Mode -> Resume: {resume_mode} | Reconstruction Only: {recon_mode}")
+        print(f" Mode -> Reconstruction Only: {recon_mode}")
         print("="*60)
         
         run_exp(
@@ -78,7 +77,6 @@ def main() -> None:
             samples_per_class=config['federated']['samples_per_class'], 
             rate_unbalance=config['federated']['rate_unbalance'], 
             alpha=config['federated']['alpha'], 
-            resume=resume_mode,
             reconstruction_only=recon_mode
         )
 
