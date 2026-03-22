@@ -1,3 +1,8 @@
+"""
+Machine unlearning module. Sanitizes a backdoored model by fine-tuning 
+using reconstructed images mixed with clean batches.
+"""
+
 import os
 import sys
 from pathlib import Path
@@ -14,12 +19,16 @@ from models.models import setup_model
 REPO_ROOT = Path(__file__).resolve().parent
 
 def resolve_repo_path(path_str: str) -> str:
+    """Resolve a path relative to the repository root."""
     path = Path(path_str)
     if path.is_absolute():
         return str(path)
     return str((REPO_ROOT / path).resolve())
 
-def load_reconstructed_image(path, device):
+def load_reconstructed_image(path: str, device: str) -> torch.Tensor:
+    """
+    Loads and transforms the reconstructed image into a tensor suitable for training.
+    """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Image not found at {path}")
 
@@ -32,8 +41,9 @@ def load_reconstructed_image(path, device):
     img_pil = Image.open(path).convert('RGB')
     return transform(img_pil).unsqueeze(0).to(device)
 
-def main():
-    # 1. Caricamento della configurazione centralizzata
+def main() -> None:
+    """Main execution function for machine unlearning."""
+    # 1. Load centralized configuration
     try:
         with open(REPO_ROOT / "config.yaml", "r") as file:
             config = yaml.safe_load(file)
@@ -41,16 +51,16 @@ def main():
         print("Error: 'config.yaml' not found. Please run from the project root.")
         sys.exit(1)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Estrazione dei parametri
-    poisoned_ckpt = resolve_repo_path(config['unlearning']['poisoned_checkpoint'])
-    sanitized_ckpt = resolve_repo_path(config['unlearning']['sanitized_checkpoint'])
-    recon_image = resolve_repo_path(config['unlearning']['recon_image'])
-    source_class = config['dataset']['source_class']
-    model_name = config['model']['name']
-    lr = config['unlearning']['lr']
-    epochs = config['unlearning']['epochs']
+    # Extract parameters
+    poisoned_ckpt: str = resolve_repo_path(config['unlearning']['poisoned_checkpoint'])
+    sanitized_ckpt: str = resolve_repo_path(config['unlearning']['sanitized_checkpoint'])
+    recon_image: str = resolve_repo_path(config['unlearning']['recon_image'])
+    source_class: int = config['dataset']['source_class']
+    model_name: str = config['model']['name']
+    lr: float = config['unlearning']['lr']
+    epochs: int = config['unlearning']['epochs']
 
     print(f"[*] Starting Unlearning Pipeline on {device.upper()}")
     print(f"[*] Poisoned Model: {poisoned_ckpt}")
@@ -59,21 +69,21 @@ def main():
     if not os.path.exists(poisoned_ckpt):
         raise FileNotFoundError(f"Checkpoint not found at {poisoned_ckpt}")
 
-    # 2. Inizializzazione modello
+    # 2. Initialize model
     model = setup_model(model_name, num_classes=10, tokenizer=None, embedding_dim=100)
     model.to(device)
 
     checkpoint = torch.load(poisoned_ckpt, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint.get('state_dict', checkpoint))
 
-    # 3. Setup tensori
+    # 3. Setup tensors
     img_tensor = load_reconstructed_image(recon_image, device)
     target_tensor = torch.tensor([source_class]).to(device)
 
-    # 4. Fine-Tuning Correttivo (Unlearning) con Batch Mixing
+    # 4. Corrective Fine-Tuning (Unlearning) with Batch Mixing
     model.train()
     
-    # Blocco parametri BatchNorm per stabilità
+    # Freeze BatchNorm parameters for stability
     for module in model.modules():
         if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
             module.eval()
@@ -127,7 +137,7 @@ def main():
         if (epoch + 1) % 5 == 0 or epoch == 0:
             print(f"    Epoch {epoch+1:02d}/{epochs} - Loss: {loss.item():.4f}")
 
-    # 5. Salvataggio
+    # 5. Saving
     model.eval()
     state = {
         'state_dict': model.state_dict(),

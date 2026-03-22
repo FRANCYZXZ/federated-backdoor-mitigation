@@ -44,6 +44,10 @@ RECON_DIR = REPO_ROOT / "reconstructed_images"
 
 
 class Peer():
+    """
+    Represents a client/peer in the federated learning network.
+    Can be an honest participant or an attacker.
+    """
     _performed_attacks = 0
     # Small constants cached once on CPU; moved to device when needed.
     _BACKDOOR_PATTERN_CPU = {
@@ -193,6 +197,10 @@ class Peer():
         return model, np.mean(epochs_loss) if epochs_loss else 0.0
 
 class FL:
+    """
+    Federated Learning orchestration environment.
+    Handles data distribution, FL rounds, model aggregation, and testing.
+    """
     def __init__(self, dataset_name, model_name, dd_type, num_peers, frac_peers, 
     seed, test_batch_size, criterion, global_rounds, local_epochs, local_bs, local_lr,
     local_momentum, labels_dict, device, attackers_ratio = 0,
@@ -375,12 +383,12 @@ class FL:
                 recon_checkpoint = str((REPO_ROOT / recon_checkpoint_path).resolve())
             
             print("\n" + "="*60)
-            print(f" MODALITÀ RICOSTRUZIONE ATTIVA (Skip Training)")
-            print(f" Caricamento Checkpoint: {recon_checkpoint}")
+            print(f" RECONSTRUCTION MODE ACTIVE (Skip Training)")
+            print(f" Loading Checkpoint: {recon_checkpoint}")
             print("="*60)
             
             if not os.path.exists(recon_checkpoint):
-                print(f"ERRORE: Il checkpoint {recon_checkpoint} non esiste. Esegui prima il training.")
+                print(f"ERROR: Checkpoint {recon_checkpoint} does not exist. Run training first.")
                 return
 
             checkpoint = torch.load(recon_checkpoint, map_location=self.device, weights_only=False)
@@ -391,13 +399,13 @@ class FL:
             
             simulation_model.to(self.device)
             
-            print("--> Avvio simulazione round per intercettazione...")
+            print("--> Starting simulation round for interception...")
             selected_peers = self.choose_peers()
             
             attackers_in_round = [p for p in selected_peers if self.peers[p].peer_type == 'attacker']
             
             if not attackers_in_round:
-                print("--> Nessun attaccante selezionato in questo round. Riprova.")
+                print("--> No attacker selected in this round. Retrying...")
                 return
 
             for peer_idx in selected_peers:
@@ -414,7 +422,7 @@ class FL:
                     )
                     simulation_model.zero_grad(set_to_none=True)
             
-            print("\n--> Simulazione attacco terminata.")
+            print("\n--> Attack simulation complete.")
             return 
         
         print('\n===> Simulation started (TRAINING MODE)...')
@@ -591,7 +599,7 @@ class FL:
         savepath = f"{RESULTS_DIR}/{attack_type}_{self.dataset_name}_{self.model_name}_{self.dd_type}_{rule}_{self.attackers_ratio}.t7"
         
         # Salvataggio effettivo
-        print(f"Salvando il modello finale in: {savepath}")
+        print(f"Saving final model to: {savepath}")
         torch.save(state, savepath)    
 
         print('\n--- SUMMARY ---')
