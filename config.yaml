@@ -45,11 +45,14 @@ attack:
   attackers_ratio: [0.3]  # Lista: puoi mettere [0.1, 0.2, 0.3] per fare più test di fila
 
 unlearning:
+  method: "ascent"
   poisoned_checkpoint: "./model_checkpoints/results/backdoor_CIFAR10_ResNet18_IID_fedavg_0.3.t7"
   sanitized_checkpoint: "./model_checkpoints/sanitized_model/sanitized_ResNet18_fedavg.t7"
   recon_image: "./reconstructed_images/ORIGINAL_peer6.png"
-  lr: 0.01
-  epochs: 20
+  ascent_lr: 0.001
+  ascent_steps: 20
+  ascent_loss_cap: 10.0
+  clean_weight: 1.0
 
 predict:
   checkpoint_path: "./model_checkpoints/sanitized_model/sanitized_ResNet18_fedavg.t7" 

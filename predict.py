@@ -3,6 +3,7 @@ Inference script to evaluate the reconstructed images against the sanitized mode
 """
 
 import sys
+import argparse
 import yaml
 import torch
 import torchvision.transforms as transforms
@@ -10,6 +11,8 @@ from PIL import Image
 import torch.nn.functional as F
 from models.models import setup_model
 from pathlib import Path
+from torch.utils.data import DataLoader
+from torchvision.datasets import CIFAR10
 
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -22,6 +25,15 @@ def resolve_repo_path(path_str: str) -> str:
 
 def main() -> None:
     """Main execution function for inference."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", help="Override predict.checkpoint_path")
+    parser.add_argument("--image", help="Override predict.image_path")
+    parser.add_argument(
+        "--dataset-metrics",
+        action="store_true",
+        help="Also evaluate clean accuracy and trigger ASR on CIFAR-10",
+    )
+    args = parser.parse_args()
     try:
         with open(REPO_ROOT / "config.yaml", "r") as file:
             config = yaml.safe_load(file)
@@ -30,8 +42,8 @@ def main() -> None:
         sys.exit(1)
 
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    recon_image_path: str = resolve_repo_path(config['predict']['image_path'])
-    checkpoint_path: str = resolve_repo_path(config['predict']['checkpoint_path'])
+    recon_image_path: str = resolve_repo_path(args.image or config['predict']['image_path'])
+    checkpoint_path: str = resolve_repo_path(args.checkpoint or config['predict']['checkpoint_path'])
     target_class_idx: int = config['dataset']['target_class']
     source_class_idx: int = config['dataset']['source_class']
     model_name: str = config['model']['name']
@@ -97,6 +109,48 @@ def main() -> None:
         print("ATTACK FAILED: The model recognized the original object.")
     else:
         print("UNCERTAIN RESULT: The model predicted a third class.")
+
+    if args.dataset_metrics:
+        eval_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
+        ])
+        eval_dataset = CIFAR10(
+            root=str(REPO_ROOT / 'data'),
+            train=False,
+            download=True,
+            transform=eval_transform,
+        )
+        eval_loader = DataLoader(eval_dataset, batch_size=128, shuffle=False)
+        correct = 0
+        total = 0
+        backdoor_correct = 0
+        backdoor_total = 0
+        backdoor_pattern = torch.tensor(
+            [[[2.5141] * 3] * 3, [[2.5968] * 3] * 3, [[2.7537] * 3] * 3],
+            dtype=torch.float32,
+            device=device,
+        )
+        model.eval()
+        with torch.no_grad():
+            for data, labels in eval_loader:
+                data, labels = data.to(device), labels.to(device)
+                predictions = model(data).argmax(dim=1)
+                correct += (predictions == labels).sum().item()
+                total += labels.numel()
+
+                source_mask = labels == source_class_idx
+                if source_mask.any():
+                    triggered = data[source_mask].clone()
+                    triggered[:, :, -3:, -3:] = backdoor_pattern
+                    target_predictions = model(triggered).argmax(dim=1)
+                    backdoor_correct += (target_predictions == target_class_idx).sum().item()
+                    backdoor_total += target_predictions.numel()
+
+        clean_accuracy = 100.0 * correct / total
+        asr = 100.0 * backdoor_correct / backdoor_total if backdoor_total else 0.0
+        print(f"CLEAN ACCURACY: {clean_accuracy:.2f}%")
+        print(f"ASR: {asr:.2f}%")
 
 if __name__ == "__main__":
     main()

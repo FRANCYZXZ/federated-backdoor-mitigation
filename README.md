@@ -25,7 +25,7 @@ The entire framework is centrally managed by the `config.yaml` file. This approa
 - `attack`:
   - `attackers_ratio`: Array of fractions of malicious clients.
   - `malicious_behavior_rate`: Probability a selected attacker will actually poison their update in a given round.
-- `unlearning`: Paths to the poisoned model, the reconstructed trigger image, and the target output for the sanitized model.
+- `unlearning`: Paths and hyperparameters for direct trigger-target gradient ascent. The sanitized model is written to a separate `_ascent` checkpoint.
 - `execution`: 
   - `reconstruction_only`: Skip FL training entirely and only run gradient inversion on the target checkpoint.
 
@@ -54,6 +54,8 @@ You can build and execute the framework using Docker Compose, which automaticall
     ```bash
     docker compose run --rm fl-security python3 predict.py
     ```
+    Add `--dataset-metrics` to also print clean CIFAR-10 accuracy and backdoor ASR. Use
+    `--checkpoint PATH` to compare checkpoints without editing `config.yaml`.
 
 ### Option B: Local Installation
 1.  Clone the repository:
@@ -94,6 +96,10 @@ python unlearning.py
 The final stage evaluates the Attack Success Rate (ASR) and global model accuracy against the reconstructed triggers.
 ```bash
 python predict.py
+```
+For aggregate verification:
+```bash
+python predict.py --checkpoint ./model_checkpoints/sanitized_model/sanitized_ResNet18_fedavg_ascent.t7 --dataset-metrics
 ```
 
 ## Directory Structure

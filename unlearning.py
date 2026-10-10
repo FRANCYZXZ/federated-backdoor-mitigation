@@ -1,7 +1,4 @@
-"""
-Machine unlearning module. Sanitizes a backdoored model by fine-tuning 
-using reconstructed images mixed with clean batches.
-"""
+"""Machine unlearning methods for a backdoored model."""
 
 import os
 import sys
@@ -57,12 +54,16 @@ def main() -> None:
     poisoned_ckpt: str = resolve_repo_path(config['unlearning']['poisoned_checkpoint'])
     sanitized_ckpt: str = resolve_repo_path(config['unlearning']['sanitized_checkpoint'])
     recon_image: str = resolve_repo_path(config['unlearning']['recon_image'])
-    source_class: int = config['dataset']['source_class']
+    target_class: int = config['dataset']['target_class']
     model_name: str = config['model']['name']
-    lr: float = config['unlearning']['lr']
-    epochs: int = config['unlearning']['epochs']
+    unlearning_config = config['unlearning']
+    ascent_lr: float = unlearning_config['ascent_lr']
+    ascent_steps: int = unlearning_config['ascent_steps']
+    ascent_loss_cap: float = unlearning_config['ascent_loss_cap']
+    clean_weight: float = unlearning_config['clean_weight']
 
     print(f"[*] Starting Unlearning Pipeline on {device.upper()}")
+    print("[*] Unlearning method: ascent")
     print(f"[*] Poisoned Model: {poisoned_ckpt}")
     print(f"[*] Reconstructed Image: {recon_image}")
 
@@ -78,7 +79,7 @@ def main() -> None:
 
     # 3. Setup tensors
     img_tensor = load_reconstructed_image(recon_image, device)
-    target_tensor = torch.tensor([source_class]).to(device)
+    trigger_target_tensor = torch.tensor([target_class]).to(device)
 
     # 4. Corrective Fine-Tuning (Unlearning) with Batch Mixing
     model.train()
@@ -90,8 +91,11 @@ def main() -> None:
             module.weight.requires_grad = False
             module.bias.requires_grad = False
 
-    optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), 
-                          lr=lr, momentum=0.9)
+    optimizer = optim.SGD(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=ascent_lr,
+        momentum=0.9
+    )
     criterion = nn.CrossEntropyLoss()
 
     # Setup clean data loader to mix with reconstructed image
@@ -109,7 +113,9 @@ def main() -> None:
         print(f"Warning: Could not load clean dataset for mixing ({e}). Using only reconstructed image.")
         clean_loader = None
 
-    for epoch in range(epochs):
+    steps = ascent_steps
+    log_interval = max(1, min(5, steps))
+    for step in range(steps):
         optimizer.zero_grad()
         
         # Batch Mixing: 1 reconstructed image + 31 clean images
@@ -123,27 +129,48 @@ def main() -> None:
             clean_data = clean_data.to(device)
             clean_targets = clean_targets.to(device)
             
-            mixed_data = torch.cat([img_tensor, clean_data], dim=0)
-            mixed_targets = torch.cat([target_tensor, clean_targets], dim=0)
-        else:
-            mixed_data = img_tensor
-            mixed_targets = target_tensor
+        trigger_output = model(img_tensor)
+        trigger_loss = criterion(trigger_output, trigger_target_tensor)
+        if trigger_loss.item() > ascent_loss_cap:
+            print(
+                f"    Step {step + 1:02d}/{steps} - Early stopping: "
+                f"trigger CE {trigger_loss.item():.4f} exceeds cap "
+                f"{ascent_loss_cap:.4f}"
+            )
+            break
 
-        outputs = model(mixed_data)
-        loss = criterion(outputs, mixed_targets)
+        clean_loss = torch.zeros((), device=device)
+        if clean_loader is not None:
+            clean_output = model(clean_data)
+            clean_loss = criterion(clean_output, clean_targets)
+        loss = -trigger_loss + clean_weight * clean_loss
+
         loss.backward()
         optimizer.step()
 
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"    Epoch {epoch+1:02d}/{epochs} - Loss: {loss.item():.4f}")
+        if (step + 1) % log_interval == 0 or step == 0 or step + 1 == steps:
+            target_probability = torch.softmax(trigger_output.detach(), dim=1)[0, target_class].item()
+            print(
+                f"    Step {step + 1:02d}/{steps} - "
+                f"Trigger CE: {trigger_loss.item():.4f} - "
+                f"Clean CE: {clean_loss.item():.4f} - "
+                f"Target probability: {target_probability:.4f}"
+            )
 
     # 5. Saving
     model.eval()
     state = {
         'state_dict': model.state_dict(),
-        'unlearning_epochs': epochs,
+        'unlearning_method': 'ascent',
+        'unlearning_steps': steps,
         'info': 'Model sanitized'
     }
+    sanitized_ckpt_path = Path(sanitized_ckpt)
+    sanitized_ckpt = str(
+        sanitized_ckpt_path.with_name(
+            f"{sanitized_ckpt_path.stem}_ascent{sanitized_ckpt_path.suffix}"
+        )
+    )
     
     os.makedirs(os.path.dirname(sanitized_ckpt), exist_ok=True)
     
